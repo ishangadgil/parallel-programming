@@ -16,16 +16,11 @@
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
-#include <pthread.h>
-
-
 
 /*** defines ***/
 
-FILE *fp;
-
 #define CTRL_KEY(k) ((k) & 0x1f)
-#define KILO_VERSION "0.0.2"
+#define KILO_VERSION "0.0.1"
 #define KILO_TAB_STOP 8
 #define KILO_QUIT_TIMES 3
 
@@ -95,32 +90,6 @@ struct editorConfig {
 	struct termios orig_termios;
 };
 struct editorConfig E;
-
-/*** parallelize ***/
-long long int inputSize, lsum;
-int numThreads = 5;
-int pflag = 0;
-
-pthread_mutex_t summation_mutex;
-
-void *busyWaitSummation(void * thread){
-	int thread_num = *((int *)thread);
-    long long int my_start = (thread_num)*((E.numrows + numThreads - 1) / numThreads);
-    long long int my_end   = (E.numrows + numThreads - 1) / numThreads + my_start;
-    if(my_end > E.numrows) my_end = E.numrows;
-    //printf("My Start = %lld, My End = %lld and thread num = %d\n",my_start,my_end,thread_num);
-   	long long int mySum = 0;
-    for(long long int i = my_start; i < my_end; i++)
-        mySum = mySum + E.row[i].size + 1;
-    //printf("Hello from %d\n", thread_num);
-    //fprintf(fp, "%d (%lld, %lld): %lld\n", thread_num, my_start, my_end, mySum);
-	pthread_mutex_lock(&summation_mutex);
-    lsum = lsum + mySum;
-    pthread_mutex_unlock(&summation_mutex);
-    
-    pflag = (pflag+1)%numThreads;
-    return NULL;
-}
 
 /*** filetypes ***/
 char *C_HL_extensions[] = { ".c", ".h", ".cpp", NULL };
@@ -574,53 +543,20 @@ void editorDelChar() {
 
 
 /*** file i/o ***/
-
-void * parallelMemCopy(void * thread){
-	int thread_num = *((int *)thread);
-    long long int my_start = (thread_num)*((E.numrows + numThreads - 1) / numThreads);
-    long long int my_end   = (E.numrows + numThreads - 1) / numThreads + my_start;
-    if(my_end > E.numrows) my_end = E.numrows;
-
-    
-	int mylen = 0;
-    for(int x = my_start; x < my_end; x++)
-    	mylen = mylen + E.row[x].size + 1;
-
-    char *myBuf = malloc(mylen);
-	char *p = myBuf;
-
-    for(int x = my_start; x < my_end; x++){
-		memcpy(p, E.row[x].chars, E.row[x].size);
-		p += E.row[x].size;
+char *editorRowsToString(int *buflen) {
+	int totlen = 0;
+	int j;
+	for (j = 0; j < E.numrows; j++)
+		totlen += E.row[j].size + 1;
+	*buflen = totlen;
+	char *buf = malloc(totlen);
+	char *p = buf;
+	for (j = 0; j < E.numrows; j++) {
+		memcpy(p, E.row[j].chars, E.row[j].size);
+		p += E.row[j].size;
 		*p = '\n';
 		p++;
 	}
-	
-	*(int *)thread = mylen;
-	return myBuf;
-}
-
-char *editorRowsToString(int *buflen) {
-	lsum = 0;
-	int args[numThreads];
-	pthread_t memThreads[numThreads];
-	for(int t = 0; t < numThreads; t++){
-		args[t] = t;
-		pthread_create(&memThreads[t], NULL, parallelMemCopy, &args[t]);
-	}
-
-	char * buf = NULL;
-	char * myPointer;
-
-    for(int t = 0; t < numThreads; t++){
-		lsum = lsum + args[t];
-		pthread_join(memThreads[t], (void **)&myPointer);
-		buf = realloc(buf, lsum);
-		memcpy(&buf[lsum-args[t]], myPointer, args[t]);
-		free(myPointer);
-    }
-	*buflen = lsum;
-
   	return buf;
 }
 
@@ -638,8 +574,9 @@ void editorOpen(char *filename) {
 	size_t linecap = 0;
 	ssize_t linelen;
 	while ((linelen = getline(&line, &linecap, fp)) != -1) {
-		while (linelen > 0 && (line[linelen - 1] == '\n' || line[linelen - 1] == '\r'))
-			linelen--;
+		while (linelen > 0 && (line[linelen - 1] == '\n' ||
+                           line[linelen - 1] == '\r'))
+		linelen--;
 		editorInsertRow(E.numrows, line, linelen);
 	}
 	free(line);
@@ -796,6 +733,8 @@ void editorScroll() {
 }
 
 
+
+
 void editorDrawRows(struct abuf *ab) {
   int y;
   for (y = 0; y < E.screenrows; y++) {
@@ -900,11 +839,7 @@ void editorRefreshScreen() {
 
 	abAppend(&ab, "\x1b[?25l", 6);
 	abAppend(&ab, "\x1b[H", 3);
-	/*
-	pthread_t threadRefreshScreen[3];
-	pthread_create(&threadRefreshScreen[0], NULL, editorDrawRows, (void  *)(&ab));
-	pthread_create(&threadRefreshScreen[1], NULL, editorDrawStatusBar, (void  *)(&ab));
-	pthread_create(&threadRefreshScreen[2], NULL, editorDrawMessageBar, (void  *)(&ab));*/
+
 	editorDrawRows(&ab);
 	editorDrawStatusBar(&ab);
 	editorDrawMessageBar(&ab);
@@ -1108,8 +1043,6 @@ void initEditor() {
 }
 
 int main(int argc, char *argv[]) {
-	fp = fopen("log.txt", "w");
-	pthread_mutex_init(&summation_mutex, NULL);
 	enableRawMode();
 	initEditor();
 
@@ -1124,6 +1057,5 @@ int main(int argc, char *argv[]) {
 		editorProcessKeypress();
 	}
 
-	fclose(fp);
 	return 0;
 }
